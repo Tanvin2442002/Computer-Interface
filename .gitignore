@@ -1,0 +1,37 @@
+# Build output
+/build/
+**/build/
+*.o
+*.obj
+*.elf
+*.map
+*.bin
+*.hex
+*.out
+*.a
+
+# ESP-IDF generated files
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults.*
+dependencies.lock
+
+# VS Code settings
+.vscode/
+
+# Backup and temporary files
+*~
+*.tmp
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+
+# Python cache
+__pycache__/
+*.pyc
