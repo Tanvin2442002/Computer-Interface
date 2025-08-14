@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -21,7 +22,10 @@ static char *ble_addr_to_str(const ble_addr_t *addr, char *str) {
 }
 
 static const char *TAG = "ble_scan";
-static const char target_addr[] = "59:7F:F7:BE:E8:B6";
+// static const char target_addr[] = "59:7F:F7:BE:E8:B6";
+//static const char target_addr[] = "64:5D:F4:FA:6E:B9";
+static const char target_addr[] = "64:5F:BB:0B:F4:42";
+
 
 // RSSI filter and trend detection variables
 #define BUFFER_SIZE 5
@@ -36,12 +40,22 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
         char addr_str[BLE_HS_ADV_MAX_SZ];
         ble_addr_to_str(&event->disc.addr, addr_str);
         // Extract device name from advertisement data
+        char device_name[32] = {0}; // Buffer for device name
         const char *name = NULL;
         const struct ble_hs_adv_field *field = NULL;
+        
         if (ble_hs_adv_find_field(BLE_HS_ADV_TYPE_COMP_NAME, event->disc.data, event->disc.length_data, &field) == 0) {
-            name = (const char *)field->value;
+            // Copy name with proper length handling
+            int name_len = field->length > 31 ? 31 : field->length;
+            memcpy(device_name, field->value, name_len);
+            device_name[name_len] = '\0';
+            name = device_name;
         } else if (ble_hs_adv_find_field(BLE_HS_ADV_TYPE_INCOMP_NAME, event->disc.data, event->disc.length_data, &field) == 0) {
-            name = (const char *)field->value;
+            // Copy name with proper length handling
+            int name_len = field->length > 31 ? 31 : field->length;
+            memcpy(device_name, field->value, name_len);
+            device_name[name_len] = '\0';
+            name = device_name;
         }
 
         if (strcmp(addr_str, target_addr) == 0) {
@@ -68,7 +82,7 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                 prevAvgRSSI = avgRSSI;
             }
         } else {
-            ESP_LOGI(TAG, "Discovered device: %s, Name: %s, RSSI: %d", addr_str, name ? name : "(none)", event->disc.rssi);
+            //ESP_LOGI(TAG, "Discovered device: %s, Name: %s, RSSI: %d", addr_str, name ? name : "(none)", event->disc.rssi);
         }
     }
     return 0;
