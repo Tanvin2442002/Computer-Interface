@@ -43,7 +43,7 @@ static const char *TAG = "ble_scan";
 #define PWM_FREQ_HZ       1000
 #define PWM_RESOLUTION    LEDC_TIMER_8_BIT
 #define PWM_MAX_DUTY      ((1 << 8) - 1)   // 255
-#define PWM_SLOW_DUTY     (PWM_MAX_DUTY / 3)     // Slower speed: ~85 (33% of max)
+#define PWM_SLOW_DUTY     (PWM_MAX_DUTY / 2)     // Medium speed: ~128 (50% of max)
 
 // Target advertising data to detect
 static const char target_uuid[] = "0000180F-0000-1000-8000-00805f9b34fb"; // Your actual UUID
@@ -52,8 +52,8 @@ static const uint8_t target_manufacturer_data[] = {1, 2, 3, 4}; // Your custom d
 static const size_t target_manufacturer_data_len = sizeof(target_manufacturer_data);
 
 // WiFi Configuration
-#define WIFI_SSID      "619"     // Change to your WiFi network
-#define WIFI_PASS      "arif2022"     // Change to your WiFi password
+#define WIFI_SSID      "robot"     // Change to your WiFi network
+#define WIFI_PASS      "robot123"     // Change to your WiFi password
 #define MAX_STA_CONN   4
 
 // Global variables for command handling
@@ -233,6 +233,30 @@ void process_flutter_command(const char* command) {
 }
 
 // Motor control functions
+void move_straight_forward(void) {
+    ESP_LOGI(TAG, "🚗 Moving straight forward for 5 seconds...");
+    
+    // Based on your rotation function, correct motor directions are:
+    // LEFT motor: LPWM = forward, RPWM = reverse
+    // RIGHT motor: LPWM = reverse, RPWM = forward
+    
+    // LEFT side forward
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, PWM_SLOW_DUTY); // LEFT_LPWM (forward)
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 0); // LEFT_RPWM (off)
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+
+    // RIGHT side forward (uses RPWM for forward motion)
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, 0); // RIGHT_LPWM (off)
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, PWM_SLOW_DUTY); // RIGHT_RPWM (forward)
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+
+    vTaskDelay(pdMS_TO_TICKS(10000)); // Move straight for 10 seconds
+
+    stop_motors();
+    ESP_LOGI(TAG, "🛑 Stopped after moving straight.");
+}
 void init_pwm_channels(void) {
     ledc_timer_config_t timer_conf = {
         .speed_mode       = LEDC_LOW_SPEED_MODE,
@@ -307,14 +331,14 @@ void rotate_360_degrees(void) {
     
     ESP_LOGI(TAG, "🔄 Motors moving in circular path... tracking RSSI for 15 seconds");
 
-    // Move in circle for 30 seconds to complete full 360-degree turn (BLE scanning continues in background)
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    // Move in circle for 25 seconds to complete full 360-degree turn (BLE scanning continues in background)
+    vTaskDelay(pdMS_TO_TICKS(25000));
 
-    // Stop motors immediately after 30 seconds
+    // Stop motors immediately after 25 seconds
     stop_motors();
     is_rotating = false;  // Clear rotating flag
 
-    ESP_LOGI(TAG, "🛑 30-second circular movement completed! Motors stopped.");
+    ESP_LOGI(TAG, "🛑 25-second circular movement completed! Motors stopped.");
     ESP_LOGI(TAG, "📶 MAX RSSI during circular movement: %d dBm", max_rssi_during_rotation);
 }
 
@@ -391,7 +415,7 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                 // First 2 bytes are manufacturer ID (little endian)
                 uint16_t mfg_id = field->value[0] | (field->value[1] << 8);
                 
-                ESP_LOGI(TAG, "Device %s has manufacturer ID: 0x%04X", addr_str, mfg_id);
+               // ESP_LOGI(TAG, "Device %s has manufacturer ID: 0x%04X", addr_str, mfg_id);
                 
                 if (mfg_id == target_manufacturer_id) {
                     // Check if manufacturer data matches
@@ -439,7 +463,9 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                     rotated = true;  // Mark that we have rotated once
                     ESP_LOGI(TAG, "🎯 FIRST TARGET DETECTION! Starting slow 15-second circular movement...");
                     rotate_360_degrees();
-                    ESP_LOGI(TAG, "✅ Circular movement complete. Will not move again until restart.");
+                    ESP_LOGI(TAG, "✅ Circular movement complete. Now moving straight for 5 seconds...");
+                    move_straight_forward();
+                    ESP_LOGI(TAG, "✅ Straight movement complete. Will not move again until restart.");
                 } else if (!is_rotating) {
                     ESP_LOGI(TAG, "🔄 Target still detected (already rotated once)");
                 }
@@ -546,3 +572,7 @@ void app_main(void) {
     
     ESP_LOGI(TAG, "🚗 Robot initialized! Ready for BLE scanning and Flutter commands");
 }
+
+
+// & 'F:\esp-idf\export.ps1'; 
+// idf.py build
