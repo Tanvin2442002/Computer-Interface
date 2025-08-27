@@ -384,6 +384,13 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                 if (memcmp(field->value, target_uuid_bytes, 16) == 0) {
                     has_target_uuid = true;
                     ESP_LOGI(TAG, "Found target 128-bit UUID matching %s", target_uuid);
+                } else {
+                    // Print the UUID of the non-target device
+                    ESP_LOGI(TAG, "Non-target 128-bit UUID found: %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                        field->value[15], field->value[14], field->value[13], field->value[12],
+                        field->value[11], field->value[10], field->value[9], field->value[8],
+                        field->value[7], field->value[6], field->value[5], field->value[4],
+                        field->value[3], field->value[2], field->value[1], field->value[0]);
                 }
             }
         }
