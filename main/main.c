@@ -46,7 +46,7 @@ static const char *TAG = "ble_scan";
 #define PWM_SLOW_DUTY     (PWM_MAX_DUTY / 2)     // Medium speed: ~128 (50% of max)
 
 // Target advertising data to detect
-static const char target_uuid[] = "0000180F-0000-1000-8000-00805f9b34fb"; // Your actual UUID
+static const char target_uuid[] = "e2c56db5-dffb-48d2-b060-d0f5a71096e0"; // Unique custom UUID for your device
 static const uint16_t target_manufacturer_id = 0x1234; // Your manufacturer ID
 static const uint8_t target_manufacturer_data[] = {1, 2, 3, 4}; // Your custom data
 static const size_t target_manufacturer_data_len = sizeof(target_manufacturer_data);
@@ -369,40 +369,19 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
         bool has_target_uuid = false;
         bool has_target_manufacturer = false;
         
-        // Check for specific Service UUID (16-bit or 128-bit)
-        // First check for 16-bit UUIDs (Battery Service 0x180F from your target UUID)
-        if (ble_hs_adv_find_field(BLE_HS_ADV_TYPE_COMP_UUIDS16, event->disc.data, event->disc.length_data, &field) == 0) {
-            // Check if it contains Battery Service UUID (0x180F) - extracted from target_uuid
-            for (int i = 0; i < field->length; i += 2) {
-                if (i + 1 < field->length) {
-                    uint16_t uuid = field->value[i] | (field->value[i + 1] << 8);
-                    if (uuid == 0x180F) {  // Battery Service UUID from target_uuid
-                        has_target_uuid = true;
-                        // Remove: command = false; (move this to the spinning logic)
-                        ESP_LOGI(TAG, "Found target 16-bit UUID: 0x%04X (matches %s)", uuid, target_uuid);
-                        break;
-                    }
-                }
-            }
-        }
-        
-        // Check for 128-bit UUIDs matching our target_uuid
-        if (!has_target_uuid && ble_hs_adv_find_field(BLE_HS_ADV_TYPE_COMP_UUIDS128, event->disc.data, event->disc.length_data, &field) == 0) {
+        // Check for 128-bit UUIDs matching our custom target_uuid
+        if (ble_hs_adv_find_field(BLE_HS_ADV_TYPE_COMP_UUIDS128, event->disc.data, event->disc.length_data, &field) == 0) {
             ESP_LOGI(TAG, "Found 128-bit UUID in advertisement, comparing with target: %s", target_uuid);
-            
-            // Convert target_uuid string to bytes for comparison
-            // Your target_uuid: "0000180F-0000-1000-8000-00805f9b34fb"
-            // In 128-bit UUID format, this should match the field data
             if (field->length == 16) {
-                // Log the found UUID for debugging
-                ESP_LOGI(TAG, "128-bit UUID found: %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                    field->value[15], field->value[14], field->value[13], field->value[12],
-                    field->value[11], field->value[10], field->value[9], field->value[8],
-                    field->value[7], field->value[6], field->value[5], field->value[4],
-                    field->value[3], field->value[2], field->value[1], field->value[0]);
-                
-                // For now, check if it's a Battery Service UUID (0x180F appears in bytes 12-13)
-                if (field->value[12] == 0x18 && field->value[13] == 0x0F) {
+                // Convert target_uuid string to bytes for comparison
+                uint8_t target_uuid_bytes[16] = {0};
+                sscanf(target_uuid,
+                    "%02hhx%02hhx%02hhx%02hhx-%02hhx%02hhx-%02hhx%02hhx-%02hhx%02hhx-%02hhx%02hhx%02hhx%02hhx%02hhx%02hhx",
+                    &target_uuid_bytes[15], &target_uuid_bytes[14], &target_uuid_bytes[13], &target_uuid_bytes[12],
+                    &target_uuid_bytes[11], &target_uuid_bytes[10], &target_uuid_bytes[9], &target_uuid_bytes[8],
+                    &target_uuid_bytes[7], &target_uuid_bytes[6], &target_uuid_bytes[5], &target_uuid_bytes[4],
+                    &target_uuid_bytes[3], &target_uuid_bytes[2], &target_uuid_bytes[1], &target_uuid_bytes[0]);
+                if (memcmp(field->value, target_uuid_bytes, 16) == 0) {
                     has_target_uuid = true;
                     ESP_LOGI(TAG, "Found target 128-bit UUID matching %s", target_uuid);
                 }
