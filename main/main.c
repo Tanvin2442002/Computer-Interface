@@ -441,27 +441,38 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                 }
             }
             
+            // Always log target detection immediately for debugging
+            ESP_LOGI(TAG, "🎯 TARGET DETECTED: %s | Name: %s | RSSI: %d dBm | UUID: %s | MFG: %s", 
+                     addr_str, name ? name : "(none)", rssi,
+                     has_target_uuid ? "YES" : "NO",
+                     has_target_manufacturer ? "YES" : "NO");
+            
+            // Continue with RSSI buffering for smooth movement
             rssiBuffer[bufferIndex] = rssi;
             bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
             if (bufferIndex == 0) bufferFilled = true;
+            
+            // Show buffer progress for debugging
+            ESP_LOGI(TAG, "📊 RSSI Buffer: %d/%d readings collected", 
+                     bufferFilled ? BUFFER_SIZE : bufferIndex, BUFFER_SIZE);
 
             if (bufferFilled) {
                 long sum = 0;
                 for (int j = 0; j < BUFFER_SIZE; j++) sum += rssiBuffer[j];
                 int avgRSSI = sum / BUFFER_SIZE;
 
-                ESP_LOGI(TAG, ">>> TARGET FOUND: %s | Name: %s | Avg RSSI: %d dBm | UUID: %s | MFG: %s | Rotating: %s", 
+                ESP_LOGI(TAG, ">>> SMOOTH TARGET FOUND: %s | Name: %s | Avg RSSI: %d dBm | UUID: %s | MFG: %s | Rotating: %s", 
                          addr_str, name ? name : "(none)", avgRSSI,
                          has_target_uuid ? "YES" : "NO",
                          has_target_manufacturer ? "YES" : "NO",
                          is_rotating ? "YES" : "NO");
 
-                // Trigger SLOW 360-degree rotation ONLY on first detection
+                // Trigger SLOW 360-degree rotation ONLY on first detection after buffer is filled
                 if (!rotated && !is_rotating) {  // Don't start new rotation if already rotated or currently rotating
                     rotated = true;  // Mark that we have rotated once
-                    ESP_LOGI(TAG, "🎯 FIRST TARGET DETECTION! Starting slow 15-second circular movement...");
+                    ESP_LOGI(TAG, "🎯 FIRST STABLE TARGET DETECTION! Starting slow 25-second circular movement...");
                     rotate_360_degrees();
-                    ESP_LOGI(TAG, "✅ Circular movement complete. Now moving straight for 5 seconds...");
+                    ESP_LOGI(TAG, "✅ Circular movement complete. Now moving straight for 10 seconds...");
                     move_straight_forward();
                     ESP_LOGI(TAG, "✅ Straight movement complete. Will not move again until restart.");
                 } else if (!is_rotating) {
