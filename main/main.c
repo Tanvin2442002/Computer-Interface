@@ -373,8 +373,16 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
         if (ble_hs_adv_find_field(BLE_HS_ADV_TYPE_COMP_UUIDS128, event->disc.data, event->disc.length_data, &field) == 0) {
             ESP_LOGI(TAG, "Found 128-bit UUID in advertisement, comparing with target: %s", target_uuid);
             ESP_LOGI(TAG, "Field length: %d bytes", field->length);
-            if (field->length == 16) {
-                ESP_LOGI(TAG, "Field length is 16, proceeding with comparison...");
+            
+            // Print raw bytes for debugging
+            ESP_LOGI(TAG, "Raw UUID bytes (%d): ", field->length);
+            for (int i = 0; i < field->length; i++) {
+                printf("%02x ", field->value[i]);
+            }
+            printf("\n");
+            
+            if (field->length >= 16) {
+                ESP_LOGI(TAG, "Field length is >= 16, proceeding with comparison...");
                 // Convert target_uuid string to bytes for comparison
                 uint8_t target_uuid_bytes[16] = {0};
                 sscanf(target_uuid,
@@ -387,7 +395,7 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                     has_target_uuid = true;
                     ESP_LOGI(TAG, "Found target 128-bit UUID matching %s", target_uuid);
                 } else {
-                    // Print the UUID of the non-target device
+                    // Print the first 16 bytes as UUID of the non-target device
                     ESP_LOGI(TAG, "Non-target 128-bit UUID found: %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
                         field->value[15], field->value[14], field->value[13], field->value[12],
                         field->value[11], field->value[10], field->value[9], field->value[8],
@@ -395,7 +403,7 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                         field->value[3], field->value[2], field->value[1], field->value[0]);
                 }
             } else {
-                ESP_LOGI(TAG, "Field length is not 16 (actual: %d), skipping comparison", field->length);
+                ESP_LOGI(TAG, "Field length is less than 16 (actual: %d), skipping comparison", field->length);
             }
         }
         
