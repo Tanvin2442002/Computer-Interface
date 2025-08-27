@@ -372,7 +372,9 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
         // Check for 128-bit UUIDs matching our custom target_uuid
         if (ble_hs_adv_find_field(BLE_HS_ADV_TYPE_COMP_UUIDS128, event->disc.data, event->disc.length_data, &field) == 0) {
             ESP_LOGI(TAG, "Found 128-bit UUID in advertisement, comparing with target: %s", target_uuid);
+            ESP_LOGI(TAG, "Field length: %d bytes", field->length);
             if (field->length == 16) {
+                ESP_LOGI(TAG, "Field length is 16, proceeding with comparison...");
                 // Convert target_uuid string to bytes for comparison
                 uint8_t target_uuid_bytes[16] = {0};
                 sscanf(target_uuid,
@@ -392,6 +394,8 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                         field->value[7], field->value[6], field->value[5], field->value[4],
                         field->value[3], field->value[2], field->value[1], field->value[0]);
                 }
+            } else {
+                ESP_LOGI(TAG, "Field length is not 16 (actual: %d), skipping comparison", field->length);
             }
         }
         
