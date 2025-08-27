@@ -499,13 +499,20 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
 /* Start scanning */
 static void ble_app_scan(void) {
     struct ble_gap_disc_params disc_params = {0};
-    disc_params.filter_duplicates = 1;
+    
+    // Optimize scanning for faster target detection
+    disc_params.filter_duplicates = 0;    // Allow duplicate advertisements for faster buffer filling
+    disc_params.passive = 1;              // Passive scanning (less power, faster)
+    disc_params.itvl = 0x10;              // Scan interval: 16 * 0.625ms = 10ms (fast scanning)
+    disc_params.window = 0x10;            // Scan window: 16 * 0.625ms = 10ms (100% duty cycle)
+    
+    ESP_LOGI(TAG, "Starting optimized BLE scanning (no duplicate filter, fast intervals)...");
 
     int rc = ble_gap_disc(0, BLE_HS_FOREVER, &disc_params, ble_app_scan_cb, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "Error initiating GAP discovery procedure; rc=%d", rc);
     } else {
-        ESP_LOGI(TAG, "Started BLE scanning");
+        ESP_LOGI(TAG, "Started BLE scanning with optimized parameters");
     }
 }
 
