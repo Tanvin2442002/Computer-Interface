@@ -15,7 +15,7 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
-#include "mdns.h"
+#include "esp_mdns.h"
 
 // BLE includes for target detection
 #include "nimble/nimble_port.h"
