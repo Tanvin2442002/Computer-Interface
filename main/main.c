@@ -66,10 +66,50 @@ static char received_command[128] = {0};
 static bool new_command_received = false;
 static esp_ip4_addr_t esp32_ip;  // Store ESP32's IP address
 
+// Target detection flag
+static bool target_active = false;  // Flag indicating if target is currently detected
+static int64_t last_target_seen = 0;  // Timestamp of last target detection
+#define TARGET_TIMEOUT_MS 5000  // 5 seconds timeout for target detection
+
+// Robot busy flag - prevents new commands during actions
+static bool robot_busy = false;  // Flag indicating if robot is performing an action
+static char current_action[64] = {0};  // Description of current action
+
 // Function declarations
 void stop_motors(void);
 void rotate_360_degrees(void);
 void move_straight_forward(void);
+
+// Check if target is still active (not timed out)
+bool is_target_active(void) {
+    // Check target timeout
+    int64_t current_time = esp_timer_get_time() / 1000;  // Current time in ms
+    if (target_active && (current_time - last_target_seen) > TARGET_TIMEOUT_MS) {
+        target_active = false;  // Target timed out
+        ESP_LOGI(TAG, "🔴 Target lost (timeout after %d seconds)", TARGET_TIMEOUT_MS / 1000);
+    }
+    return target_active;
+}
+
+// Set robot as busy with action description
+void set_robot_busy(const char* action) {
+    robot_busy = true;
+    strncpy(current_action, action, sizeof(current_action) - 1);
+    current_action[sizeof(current_action) - 1] = '\0';
+    ESP_LOGI(TAG, "🔒 Robot busy: %s", current_action);
+}
+
+// Clear robot busy flag
+void set_robot_free(void) {
+    robot_busy = false;
+    strcpy(current_action, "idle");
+    ESP_LOGI(TAG, "🔓 Robot ready for commands");
+}
+
+// Check if robot is currently busy
+bool is_robot_busy(void) {
+    return robot_busy;
+}
 
 // RSSI filter and trend detection variables
 #define BUFFER_SIZE 5
@@ -196,6 +236,9 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     cJSON *json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "status", "active");
     cJSON_AddBoolToObject(json, "rotating", is_rotating);
+    cJSON_AddBoolToObject(json, "target_detected", is_target_active());
+    cJSON_AddBoolToObject(json, "busy", is_robot_busy());
+    cJSON_AddStringToObject(json, "current_action", current_action);
     
     // Convert ESP IP to string format
     char ip_str[16];
@@ -251,6 +294,13 @@ static httpd_handle_t start_webserver(void)
 void process_flutter_command(const char* command) {
     ESP_LOGI(TAG, "🔄 Processing command: '%s'", command);
     
+    // Check if robot is busy performing another action
+    if (is_robot_busy()) {
+        ESP_LOGI(TAG, "⚠️ Robot is busy performing action: %s", current_action);
+        ESP_LOGI(TAG, "❌ Command '%s' rejected - robot busy", command);
+        return;
+    }
+    
     // Remove any whitespace/newlines
     char clean_command[64];
     strncpy(clean_command, command, sizeof(clean_command) - 1);
@@ -275,22 +325,61 @@ void process_flutter_command(const char* command) {
         ESP_LOGI(TAG, "📱 Command: Stopping motors...");
         stop_motors();
         is_rotating = false;
+        
+        // Set robot as free when stopped manually
+        set_robot_free();
+        
     } else if (strcmp(clean_command, "scan") == 0) {
         ESP_LOGI(TAG, "📱 Command: BLE scanning is already active");
     } else if (strcmp(clean_command, "forward") == 0) {
         ESP_LOGI(TAG, "📱 Command: Moving forward...");
         move_straight_forward();
+    } else if (strcmp(clean_command, "deliver") == 0) {
+        if (is_target_active()) {
+            ESP_LOGI(TAG, "📱 Command: Starting delivery sequence!");
+            if (!is_rotating) {
+                ESP_LOGI(TAG, "🚚 Step 1: Rotating to scan for best direction...");
+                rotate_360_degrees();
+                ESP_LOGI(TAG, "🚚 Step 2: Moving forward to deliver...");
+                move_straight_forward();
+                ESP_LOGI(TAG, "✅ Delivery sequence completed!");
+            } else {
+                ESP_LOGI(TAG, "⚠️ Already rotating, ignoring deliver command");
+            }
+        } else {
+            ESP_LOGI(TAG, "❌ Cannot deliver: No active target detected!");
+            ESP_LOGI(TAG, "💡 Wait for target detection or use BLE advertising to become discoverable");
+        }
+    } else if (strcmp(clean_command, "meet") == 0) {
+        if (is_target_active()) {
+            ESP_LOGI(TAG, "📱 Command: Meeting sequence started!");
+            if (!is_rotating) {
+                ESP_LOGI(TAG, "🤝 Step 1: Rotating to scan for best path to you...");
+                rotate_360_degrees();
+                ESP_LOGI(TAG, "🤝 Step 2: Moving forward to meet you...");
+                move_straight_forward();
+                ESP_LOGI(TAG, "✅ Arrived at meeting point!");
+            } else {
+                ESP_LOGI(TAG, "⚠️ Already rotating, ignoring meet command");
+            }
+        } else {
+            ESP_LOGI(TAG, "❌ Cannot meet: No active target detected!");
+            ESP_LOGI(TAG, "💡 Wait for target detection or use BLE advertising to become discoverable");
+        }
     } else if (strcmp(clean_command, "test") == 0) {
         ESP_LOGI(TAG, "📱 Command: Test successful! Motors and communication working ✅");
     } else {
         ESP_LOGI(TAG, "❓ Unknown command: '%s'", clean_command);
-        ESP_LOGI(TAG, "💡 Available commands: rotate, stop, scan, forward, test");
+        ESP_LOGI(TAG, "💡 Available commands: rotate, stop, scan, forward, deliver, meet, test");
     }
 }
 
 // Motor control functions
 void move_straight_forward(void) {
     ESP_LOGI(TAG, "🚗 Moving straight forward for 5 seconds...");
+    
+    // Set robot as busy performing forward movement
+    set_robot_busy("moving_forward");
     
     // Based on your rotation function, correct motor directions are:
     // LEFT motor: LPWM = forward, RPWM = reverse
@@ -311,6 +400,10 @@ void move_straight_forward(void) {
     vTaskDelay(pdMS_TO_TICKS(10000)); // Move straight for 10 seconds
 
     stop_motors();
+    
+    // Set robot as free after movement completion
+    set_robot_free();
+    
     ESP_LOGI(TAG, "🛑 Stopped after moving straight.");
 }
 void init_pwm_channels(void) {
@@ -366,6 +459,9 @@ void stop_motors(void) {
 void rotate_360_degrees(void) {
     ESP_LOGI(TAG, "🔄 Starting SLOW circular movement for 15 seconds while tracking max RSSI!");
     
+    // Set robot as busy performing rotation
+    set_robot_busy("rotating");
+    
     // Reset max RSSI tracker and set rotating flag
     max_rssi_during_rotation = -127;  // Reset to minimum possible RSSI
     is_rotating = true;
@@ -393,6 +489,9 @@ void rotate_360_degrees(void) {
     // Stop motors immediately after 25 seconds
     stop_motors();
     is_rotating = false;  // Clear rotating flag
+    
+    // Set robot as free after rotation completion
+    set_robot_free();
 
     ESP_LOGI(TAG, "🛑 25-second circular movement completed! Motors stopped.");
     ESP_LOGI(TAG, "📶 MAX RSSI during circular movement: %d dBm", max_rssi_during_rotation);
@@ -489,6 +588,9 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
         if (is_target_device) {
             int rssi = event->disc.rssi;
             
+            // Update last seen timestamp
+            last_target_seen = esp_timer_get_time() / 1000;  // Convert to milliseconds
+            
             // If we're rotating, track the max RSSI
             if (is_rotating) {
                 if (rssi > max_rssi_during_rotation) {
@@ -523,16 +625,15 @@ static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
                          has_target_manufacturer ? "YES" : "NO",
                          is_rotating ? "YES" : "NO");
 
-                // Trigger SLOW 360-degree rotation ONLY on first detection after buffer is filled
-                if (!rotated && !is_rotating) {  // Don't start new rotation if already rotated or currently rotating
-                    rotated = true;  // Mark that we have rotated once
-                    ESP_LOGI(TAG, "🎯 FIRST STABLE TARGET DETECTION! Starting slow 25-second circular movement...");
-                    rotate_360_degrees();
-                    ESP_LOGI(TAG, "✅ Circular movement complete. Now moving straight for 10 seconds...");
-                    move_straight_forward();
-                    ESP_LOGI(TAG, "✅ Straight movement complete. Will not move again until restart.");
+                // Set target active flag when stable target is detected
+                if (!rotated && !is_rotating) {  // First stable detection
+                    rotated = true;  // Mark that we have detected once
+                    target_active = true;  // Set target as active
+                    ESP_LOGI(TAG, "🎯 TARGET ACTIVATED! Ready for commands.");
+                    ESP_LOGI(TAG, "📱 You can now send 'meet' or 'deliver' commands from Flutter app.");
                 } else if (!is_rotating) {
-                    ESP_LOGI(TAG, "🔄 Target still detected (already rotated once)");
+                    target_active = true;  // Keep target active while detected
+                    ESP_LOGI(TAG, "🔄 Target still active and ready for commands");
                 }
 
                 int diff = avgRSSI - prevAvgRSSI;
