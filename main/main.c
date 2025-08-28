@@ -71,6 +71,11 @@ static bool target_active = false;  // Flag indicating if target is currently de
 static int64_t last_target_seen = 0;  // Timestamp of last target detection
 #define TARGET_TIMEOUT_MS 5000  // 5 seconds timeout for target detection
 
+// Non-blocking motor control variables
+static int64_t motor_start_time = 0;  // When current motor action started
+static int64_t motor_duration = 0;    // How long the motor action should run
+static bool motor_active = false;     // Whether motors are currently running a timed action
+
 // Function declarations
 void stop_motors(void);
 void rotate_360_degrees(void);
@@ -213,6 +218,16 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(json, "status", "active");
     cJSON_AddBoolToObject(json, "rotating", is_rotating);
     cJSON_AddBoolToObject(json, "target_detected", is_target_active());
+    cJSON_AddBoolToObject(json, "motor_active", motor_active);
+    
+    // Add time remaining if motors are active
+    if (motor_active) {
+        int64_t current_time = esp_timer_get_time() / 1000;  // Current time in ms
+        int64_t elapsed_time = current_time - motor_start_time;
+        int64_t remaining_time = motor_duration - elapsed_time;
+        if (remaining_time < 0) remaining_time = 0;
+        cJSON_AddNumberToObject(json, "time_remaining_ms", remaining_time);
+    }
     
     // Convert ESP IP to string format
     char ip_str[16];
@@ -340,7 +355,7 @@ void process_flutter_command(const char* command) {
 
 // Motor control functions
 void move_straight_forward(void) {
-    ESP_LOGI(TAG, "🚗 Moving straight forward for 5 seconds...");
+    ESP_LOGI(TAG, "🚗 Starting non-blocking forward movement for 10 seconds...");
     
     // Based on your rotation function, correct motor directions are:
     // LEFT motor: LPWM = forward, RPWM = reverse
@@ -358,11 +373,12 @@ void move_straight_forward(void) {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, PWM_SLOW_DUTY); // RIGHT_RPWM (forward)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
 
-    vTaskDelay(pdMS_TO_TICKS(10000)); // Move straight for 10 seconds
-
-    stop_motors();
+    // Set up non-blocking timer
+    motor_start_time = esp_timer_get_time() / 1000;  // Current time in ms
+    motor_duration = 10000;  // 10 seconds
+    motor_active = true;
     
-    ESP_LOGI(TAG, "🛑 Stopped after moving straight.");
+    ESP_LOGI(TAG, "� Forward movement started - will auto-stop after 10 seconds");
 }
 void init_pwm_channels(void) {
     ledc_timer_config_t timer_conf = {
@@ -412,10 +428,16 @@ void stop_motors(void) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)c, 0);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)c);
     }
+    
+    // Clear motor timing variables
+    motor_active = false;
+    is_rotating = false;
+    
+    ESP_LOGI(TAG, "🛑 Motors stopped and timers cleared");
 }
 
 void rotate_360_degrees(void) {
-    ESP_LOGI(TAG, "🔄 Starting SLOW circular movement for 15 seconds while tracking max RSSI!");
+    ESP_LOGI(TAG, "🔄 Starting non-blocking circular movement for 25 seconds while tracking max RSSI!");
     
     // Reset max RSSI tracker and set rotating flag
     max_rssi_during_rotation = -127;  // Reset to minimum possible RSSI
@@ -436,17 +458,14 @@ void rotate_360_degrees(void) {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, PWM_SLOW_DUTY);    // RIGHT_RPWM (100% slow speed)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
     
-    ESP_LOGI(TAG, "🔄 Motors moving in circular path... tracking RSSI for 15 seconds");
+    ESP_LOGI(TAG, "🔄 Motors moving in circular path... tracking RSSI for 25 seconds");
 
-    // Move in circle for 25 seconds to complete full 360-degree turn (BLE scanning continues in background)
-    vTaskDelay(pdMS_TO_TICKS(25000));
-
-    // Stop motors immediately after 25 seconds
-    stop_motors();
-    is_rotating = false;  // Clear rotating flag
+    // Set up non-blocking timer
+    motor_start_time = esp_timer_get_time() / 1000;  // Current time in ms
+    motor_duration = 25000;  // 25 seconds
+    motor_active = true;
     
-    ESP_LOGI(TAG, "🛑 25-second circular movement completed! Motors stopped.");
-    ESP_LOGI(TAG, "📶 MAX RSSI during circular movement: %d dBm", max_rssi_during_rotation);
+    ESP_LOGI(TAG, "� Rotation started - will auto-stop after 25 seconds");
 }
 
 static int ble_app_scan_cb(struct ble_gap_event *event, void *arg) {
@@ -651,11 +670,35 @@ static void nimble_host_task(void *param) {
     vTaskDelete(NULL);
 }
 
+/* Check if motor timer has expired and auto-stop if needed */
+static void check_motor_timer(void) {
+    if (motor_active) {
+        int64_t current_time = esp_timer_get_time() / 1000;  // Current time in ms
+        int64_t elapsed_time = current_time - motor_start_time;
+        
+        if (elapsed_time >= motor_duration) {
+            // Timer expired, stop motors
+            stop_motors();
+            
+            if (is_rotating) {
+                ESP_LOGI(TAG, "🛑 25-second circular movement completed! Motors auto-stopped.");
+                ESP_LOGI(TAG, "📶 MAX RSSI during circular movement: %d dBm", max_rssi_during_rotation);
+            } else {
+                ESP_LOGI(TAG, "🛑 Forward movement completed! Motors auto-stopped.");
+            }
+        }
+    }
+}
+
 /* Command monitoring task */
 static void command_monitor_task(void *param) {
     ESP_LOGI(TAG, "🔍 Command monitor task started - checking every 100ms");
     
     while (1) {
+        // Check if motors need to be auto-stopped
+        check_motor_timer();
+        
+        // Process new commands
         if (new_command_received) {
             ESP_LOGI(TAG, "🚨 NEW COMMAND DETECTED! Processing: '%s'", received_command);
             process_flutter_command(received_command);
