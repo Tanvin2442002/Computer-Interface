@@ -10,13 +10,14 @@
 
 #include <stdio.h>
 #include "driver/i2c.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define I2C_MASTER_SCL_IO           6        // SCL pin for ESP32-C6 (was 23)
-#define I2C_MASTER_SDA_IO           7        // SDA pin for ESP32-C6 (was 22)
-#define I2C_MASTER_FREQ_HZ          100000   // 100kHz (slower, more reliable)
+#define I2C_MASTER_SCL_IO           23       // SCL pin for ESP32-C6 
+#define I2C_MASTER_SDA_IO           22       // SDA pin for ESP32-C6
+#define I2C_MASTER_FREQ_HZ          50000    // 50kHz (even slower for reliability)
 
 #define MPU9250_ADDR_0 0x68   // AD0 = GND
 #define MPU9250_ADDR_1 0x69   // AD0 = VCC
@@ -38,6 +39,10 @@ static uint8_t mpu_device_addr = 0;
 
 /* ================= I2C INIT ================= */
 void i2c_master_init(void) {
+    // First, delete any existing I2C driver
+    i2c_driver_delete(I2C_MASTER_NUM);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = I2C_MASTER_SDA_IO,
@@ -51,6 +56,20 @@ void i2c_master_init(void) {
     ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
     ESP_LOGI(TAG, "I2C master initialized on SDA=%d, SCL=%d at %d Hz", 
              I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, I2C_MASTER_FREQ_HZ);
+}
+
+/* ================= I2C BUS RESET ================= */
+void i2c_bus_reset(void) {
+    ESP_LOGI(TAG, "Resetting I2C bus...");
+    
+    // Delete and reinstall I2C driver
+    i2c_driver_delete(I2C_MASTER_NUM);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
+    // Reinitialize
+    i2c_master_init();
+    
+    ESP_LOGI(TAG, "I2C bus reset complete");
 }
 
 /* ================= I2C READ/WRITE ================= */
@@ -208,39 +227,68 @@ void read_gyro(int16_t *gx, int16_t *gy, int16_t *gz) {
 /* ================= I2C SCANNER ================= */
 void i2c_scanner(void) {
     ESP_LOGI(TAG, "Starting I2C bus scan...");
-    for (uint8_t addr = 1; addr < 127; addr++) {
+    bool device_found = false;
+    
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {  // Standard I2C address range
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
         i2c_master_stop(cmd);
         
-        esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
+        esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
         i2c_cmd_link_delete(cmd);
         
         if (ret == ESP_OK) {
-            uint8_t who_am_i = i2c_read_byte(addr, WHO_AM_I_REG);
-            ESP_LOGI(TAG, "Found device at address 0x%02X, WHO_AM_I=0x%02X", addr, who_am_i);
+            ESP_LOGI(TAG, "Device found at address 0x%02X", addr);
+            device_found = true;
             
-            // Check if this is our MPU device
+            // Try to read WHO_AM_I register if this might be an MPU device
             if (addr == MPU9250_ADDR_0 || addr == MPU9250_ADDR_1) {
+                uint8_t who_am_i = i2c_read_byte(addr, WHO_AM_I_REG);
+                ESP_LOGI(TAG, "MPU device at 0x%02X, WHO_AM_I=0x%02X", addr, who_am_i);
                 mpu_device_addr = addr;
-                ESP_LOGI(TAG, "MPU device detected at address 0x%02X", addr);
             }
+        } else if (ret != ESP_ERR_TIMEOUT) {
+            // Log non-timeout errors for debugging
+            ESP_LOGD(TAG, "Error 0x%x at address 0x%02X", ret, addr);
         }
     }
+    
+    if (!device_found) {
+        ESP_LOGW(TAG, "No I2C devices found! Check:");
+        ESP_LOGW(TAG, "  1. Wiring: SDA=%d, SCL=%d", I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+        ESP_LOGW(TAG, "  2. Power: 3.3V to VCC, GND to GND");
+        ESP_LOGW(TAG, "  3. Pull-up resistors on SDA/SCL (4.7kΩ)");
+        ESP_LOGW(TAG, "  4. Correct ESP32-C6 pin assignments");
+    }
+    
     ESP_LOGI(TAG, "I2C bus scan complete");
 }
 
 /* ================= MAIN ================= */
 void app_main(void) {
-    i2c_master_init();
-    ESP_LOGI(TAG, "I2C initialized, scanning for devices...");
+    ESP_LOGI(TAG, "Starting MPU9250 test...");
+    ESP_LOGI(TAG, "Pin configuration: SDA=%d, SCL=%d", I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
     
-    // Scan I2C bus for all devices
+    i2c_master_init();
+    
+    // Try bus reset if initial scan fails
     i2c_scanner();
     
     if (mpu_device_addr == 0) {
-        ESP_LOGE(TAG, "No MPU device found! Check wiring.");
+        ESP_LOGW(TAG, "No MPU device found on first scan, trying bus reset...");
+        i2c_bus_reset();
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        i2c_scanner();
+    }
+    
+    if (mpu_device_addr == 0) {
+        ESP_LOGE(TAG, "No MPU device found! Check wiring:");
+        ESP_LOGE(TAG, "  SDA: GPIO %d → MPU SDA", I2C_MASTER_SDA_IO);
+        ESP_LOGE(TAG, "  SCL: GPIO %d → MPU SCL", I2C_MASTER_SCL_IO);
+        ESP_LOGE(TAG, "  VCC: 3.3V → MPU VCC");
+        ESP_LOGE(TAG, "  GND: GND → MPU GND");
+        ESP_LOGE(TAG, "Also try different GPIO pins if these don't work");
         return;
     }
 
