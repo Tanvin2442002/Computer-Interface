@@ -51,9 +51,9 @@ static const uint16_t target_manufacturer_id = 0x1234; // Your manufacturer ID
 static const uint8_t target_manufacturer_data[] = {1, 2, 3, 4}; // Your custom data
 static const size_t target_manufacturer_data_len = sizeof(target_manufacturer_data);
 
-// WiFi Configuration
-#define WIFI_SSID      "robot"     // Change to your WiFi network
-#define WIFI_PASS      "robot123"     // Change to your WiFi password
+// WiFi Configuration - Android-compatible settings
+#define WIFI_SSID      "ESP32_Robot"   // More descriptive name
+#define WIFI_PASS      "robot123456"   // Longer password (8+ chars recommended)
 #define MAX_STA_CONN   4
 
 // Global variables for command handling
@@ -102,34 +102,61 @@ void wifi_init_softap(void) {
                                                          &wifi_event_handler,
                                                          NULL, NULL));
 
+    // Android-compatible WiFi AP configuration
     wifi_config_t wifi_config = {
         .ap = {
             .ssid = WIFI_SSID,
             .ssid_len = strlen(WIFI_SSID),
-            .channel = 1,
+            .channel = 6,                           // Channel 6 (less congested than 1)
             .password = WIFI_PASS,
             .max_connection = MAX_STA_CONN,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK
+            .authmode = WIFI_AUTH_WPA2_PSK,         // Use WPA2 specifically
+            .beacon_interval = 100,                 // Standard beacon interval
+            .pairwise_cipher = WIFI_CIPHER_TYPE_CCMP, // AES encryption
+            .ftm_responder = false,
+            .pmf_cfg = {
+                .required = false,                  // PMF not required for compatibility
+            }
         },
     };
+    
+    // Ensure minimum password length for security
     if (strlen(WIFI_PASS) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+        ESP_LOGW(TAG, "⚠️ Open WiFi network - not recommended!");
+    } else if (strlen(WIFI_PASS) < 8) {
+        ESP_LOGW(TAG, "⚠️ Password less than 8 characters - some devices may reject connection");
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    
+    // Set country code for better compatibility
+    wifi_country_t country = {
+        .cc = "US",                                 // Country code
+        .schan = 1,                                 // Start channel
+        .nchan = 13,                                // Number of channels
+        .policy = WIFI_COUNTRY_POLICY_AUTO,
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_country(&country));
+    
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi AP started. SSID:%s password:%s", WIFI_SSID, WIFI_PASS);
+    ESP_LOGI(TAG, "✅ WiFi AP started successfully!");
+    ESP_LOGI(TAG, "📶 SSID: %s", WIFI_SSID);
+    ESP_LOGI(TAG, "🔐 Password: %s", WIFI_PASS);
+    ESP_LOGI(TAG, "📡 Channel: %d", wifi_config.ap.channel);
+    ESP_LOGI(TAG, "🔒 Security: WPA2-PSK with AES");
     
     // Get and display IP address
     esp_netif_ip_info_t ip_info;
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (netif) {
         esp_netif_get_ip_info(netif, &ip_info);
-        ESP_LOGI(TAG, "ESP32 AP IP Address: " IPSTR, IP2STR(&ip_info.ip));
-        ESP_LOGI(TAG, "ESP32 AP Gateway: " IPSTR, IP2STR(&ip_info.gw));
-        ESP_LOGI(TAG, "ESP32 AP Netmask: " IPSTR, IP2STR(&ip_info.netmask));
+        ESP_LOGI(TAG, "🌐 ESP32 AP IP Address: " IPSTR, IP2STR(&ip_info.ip));
+        ESP_LOGI(TAG, "🚪 Gateway: " IPSTR, IP2STR(&ip_info.gw));
+        ESP_LOGI(TAG, "🔢 Netmask: " IPSTR, IP2STR(&ip_info.netmask));
+        ESP_LOGI(TAG, "📱 Android should connect to: %s (password: %s)", WIFI_SSID, WIFI_PASS);
     }
 }
 
@@ -575,6 +602,7 @@ void app_main(void) {
     start_webserver();
     ESP_LOGI(TAG, "HTTP server started on port 80");
     ESP_LOGI(TAG, "📱 Flutter can send commands to: http://192.168.4.1/command");
+    ESP_LOGI(TAG, "📶 Connect Android to WiFi: %s (password: %s)", WIFI_SSID, WIFI_PASS);
 
     // Initialize BLE
     ret = nimble_port_init();
