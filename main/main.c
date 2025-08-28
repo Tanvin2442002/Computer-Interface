@@ -15,15 +15,14 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
+#include "mdns.h"
 
 // BLE includes for target detection
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
-#include "host    // Initialize WiFi as station (connect to existing network)
-    ESP_LOGI(TAG, "📶 Connecting to WiFi network...");
-    wifi_init_sta();e_gap.h"
+#include "host/ble_gap.h"
 #include "host/ble_store.h" 
 #include "host/ble_hs_adv.h"
 
