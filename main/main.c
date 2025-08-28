@@ -15,7 +15,7 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
-#include "esp_mdns.h"
+#include "lwip/apps/mdns.h"
 
 // BLE includes for target detection
 #include "nimble/nimble_port.h"
@@ -96,13 +96,9 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "✅ Connected to WiFi! ESP32 IP address: " IPSTR, IP2STR(&event->ip_info.ip));
         esp32_ip = event->ip_info.ip;
         
-        // Start mDNS service
-        ESP_ERROR_CHECK(mdns_init());
-        ESP_ERROR_CHECK(mdns_hostname_set(MDNS_HOSTNAME));
-        ESP_ERROR_CHECK(mdns_instance_name_set("ESP32 Robot Controller"));
-        
-        // Add HTTP service
-        ESP_ERROR_CHECK(mdns_service_add("ESP32-Robot", "_http", "_tcp", 80, NULL, 0));
+        // Start mDNS service using lwIP
+        mdns_resp_init();
+        mdns_resp_add_netif(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), MDNS_HOSTNAME, 3600);
         
         ESP_LOGI(TAG, "🌐 mDNS started! You can access ESP32 at: http://%s.local", MDNS_HOSTNAME);
         ESP_LOGI(TAG, "📱 Flutter app should connect to: http://%s.local/command", MDNS_HOSTNAME);
