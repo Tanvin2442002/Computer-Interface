@@ -71,10 +71,6 @@ static bool target_active = false;  // Flag indicating if target is currently de
 static int64_t last_target_seen = 0;  // Timestamp of last target detection
 #define TARGET_TIMEOUT_MS 5000  // 5 seconds timeout for target detection
 
-// Robot busy flag - prevents new commands during actions
-static bool robot_busy = false;  // Flag indicating if robot is performing an action
-static char current_action[64] = {0};  // Description of current action
-
 // Function declarations
 void stop_motors(void);
 void rotate_360_degrees(void);
@@ -89,26 +85,6 @@ bool is_target_active(void) {
         ESP_LOGI(TAG, "🔴 Target lost (timeout after %d seconds)", TARGET_TIMEOUT_MS / 1000);
     }
     return target_active;
-}
-
-// Set robot as busy with action description
-void set_robot_busy(const char* action) {
-    robot_busy = true;
-    strncpy(current_action, action, sizeof(current_action) - 1);
-    current_action[sizeof(current_action) - 1] = '\0';
-    ESP_LOGI(TAG, "🔒 Robot busy: %s", current_action);
-}
-
-// Clear robot busy flag
-void set_robot_free(void) {
-    robot_busy = false;
-    strcpy(current_action, "idle");
-    ESP_LOGI(TAG, "🔓 Robot ready for commands");
-}
-
-// Check if robot is currently busy
-bool is_robot_busy(void) {
-    return robot_busy;
 }
 
 // RSSI filter and trend detection variables
@@ -237,8 +213,6 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(json, "status", "active");
     cJSON_AddBoolToObject(json, "rotating", is_rotating);
     cJSON_AddBoolToObject(json, "target_detected", is_target_active());
-    cJSON_AddBoolToObject(json, "busy", is_robot_busy());
-    cJSON_AddStringToObject(json, "current_action", current_action);
     
     // Convert ESP IP to string format
     char ip_str[16];
@@ -293,13 +267,6 @@ static httpd_handle_t start_webserver(void)
 // Process received commands (from WiFi HTTP)
 void process_flutter_command(const char* command) {
     ESP_LOGI(TAG, "🔄 Processing command: '%s'", command);
-    
-    // Check if robot is busy performing another action
-    if (is_robot_busy()) {
-        ESP_LOGI(TAG, "⚠️ Robot is busy performing action: %s", current_action);
-        ESP_LOGI(TAG, "❌ Command '%s' rejected - robot busy", command);
-        return;
-    }
     
     // Remove any whitespace/newlines
     char clean_command[64];
@@ -378,9 +345,6 @@ void process_flutter_command(const char* command) {
 void move_straight_forward(void) {
     ESP_LOGI(TAG, "🚗 Moving straight forward for 5 seconds...");
     
-    // Set robot as busy performing forward movement
-    set_robot_busy("moving_forward");
-    
     // Based on your rotation function, correct motor directions are:
     // LEFT motor: LPWM = forward, RPWM = reverse
     // RIGHT motor: LPWM = reverse, RPWM = forward
@@ -400,9 +364,6 @@ void move_straight_forward(void) {
     vTaskDelay(pdMS_TO_TICKS(10000)); // Move straight for 10 seconds
 
     stop_motors();
-    
-    // Set robot as free after movement completion
-    set_robot_free();
     
     ESP_LOGI(TAG, "🛑 Stopped after moving straight.");
 }
@@ -459,9 +420,6 @@ void stop_motors(void) {
 void rotate_360_degrees(void) {
     ESP_LOGI(TAG, "🔄 Starting SLOW circular movement for 15 seconds while tracking max RSSI!");
     
-    // Set robot as busy performing rotation
-    set_robot_busy("rotating");
-    
     // Reset max RSSI tracker and set rotating flag
     max_rssi_during_rotation = -127;  // Reset to minimum possible RSSI
     is_rotating = true;
@@ -490,9 +448,6 @@ void rotate_360_degrees(void) {
     stop_motors();
     is_rotating = false;  // Clear rotating flag
     
-    // Set robot as free after rotation completion
-    set_robot_free();
-
     ESP_LOGI(TAG, "🛑 25-second circular movement completed! Motors stopped.");
     ESP_LOGI(TAG, "📶 MAX RSSI during circular movement: %d dBm", max_rssi_during_rotation);
 }
