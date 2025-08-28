@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
+#include "mdns.h"
 
 // BLE includes for target detection
 #include "nimble/nimble_port.h"
@@ -56,9 +57,12 @@ static const uint8_t target_manufacturer_data[] = {1, 2, 3, 4}; // Your custom d
 static const size_t target_manufacturer_data_len = sizeof(target_manufacturer_data);
 
 // WiFi Configuration - Connect to existing network
-#define WIFI_SSID      "Your_Home_WiFi_Name"    // 🔧 CHANGE THIS to your WiFi network name
-#define WIFI_PASS      "Your_WiFi_Password"     // 🔧 CHANGE THIS to your WiFi password  
+#define WIFI_SSID      "619"    // 🔧 CHANGE THIS to your WiFi network name
+#define WIFI_PASS      "arif2022"     // 🔧 CHANGE THIS to your WiFi password  
 #define WIFI_MAXIMUM_RETRY  5
+
+// mDNS Configuration
+#define MDNS_HOSTNAME  "esp32-robot"            // ESP32 will be accessible as "esp32-robot.local"
 
 // Global variables for command handling
 static char received_command[128] = {0};
@@ -93,6 +97,17 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "✅ Connected to WiFi! ESP32 IP address: " IPSTR, IP2STR(&event->ip_info.ip));
         esp32_ip = event->ip_info.ip;
+        
+        // Start mDNS service
+        ESP_ERROR_CHECK(mdns_init());
+        ESP_ERROR_CHECK(mdns_hostname_set(MDNS_HOSTNAME));
+        ESP_ERROR_CHECK(mdns_instance_name_set("ESP32 Robot Controller"));
+        
+        // Add HTTP service
+        ESP_ERROR_CHECK(mdns_service_add("ESP32-Robot", "_http", "_tcp", 80, NULL, 0));
+        
+        ESP_LOGI(TAG, "🌐 mDNS started! You can access ESP32 at: http://%s.local", MDNS_HOSTNAME);
+        ESP_LOGI(TAG, "📱 Flutter app should connect to: http://%s.local/command", MDNS_HOSTNAME);
     }
 }
 
@@ -642,9 +657,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "📱 FLUTTER CONNECTION:");
     ESP_LOGI(TAG, "   1. Make sure your phone is on the same WiFi network: %s", WIFI_SSID);
-    ESP_LOGI(TAG, "   2. ESP32 IP will be shown above when connected");
-    ESP_LOGI(TAG, "   3. Flutter app should send POST to: http://ESP32_IP/command");
-    ESP_LOGI(TAG, "   4. Test with GET: http://ESP32_IP/status");
+    ESP_LOGI(TAG, "   2. Flutter app should connect to: http://%s.local/command", MDNS_HOSTNAME);
+    ESP_LOGI(TAG, "   3. Alternative: Use IP address shown above if mDNS doesn't work");
+    ESP_LOGI(TAG, "   4. Test with GET: http://%s.local/status", MDNS_HOSTNAME);
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🎯 BLE TARGET DETECTION:");
     ESP_LOGI(TAG, "   - Scanning for UUID: %s", target_uuid);
