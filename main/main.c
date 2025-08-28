@@ -51,10 +51,10 @@ static const uint16_t target_manufacturer_id = 0x1234; // Your manufacturer ID
 static const uint8_t target_manufacturer_data[] = {1, 2, 3, 4}; // Your custom data
 static const size_t target_manufacturer_data_len = sizeof(target_manufacturer_data);
 
-// WiFi Configuration - Simple Android-compatible settings
-#define WIFI_SSID      "ESP32Robot"     // Simple name without special characters
-#define WIFI_PASS      ""               // Try open network first
-#define MAX_STA_CONN   4
+// WiFi Configuration - Ultra-simple for Android compatibility
+#define WIFI_SSID      "ESP32"          // Very simple SSID
+#define WIFI_PASS      ""               // Empty password for open network
+#define MAX_STA_CONN   1                // Only 1 device to avoid conflicts
 
 // Global variables for command handling
 static char received_command[128] = {0};
@@ -81,10 +81,40 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data) {
     if (event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
-        ESP_LOGI(TAG, "Station joined, AID=%d", event->aid);
+        ESP_LOGI(TAG, "✅ Station connected successfully, AID=%d", event->aid);
+        ESP_LOGI(TAG, "📱 Device MAC: %02X:%02X:%02X:%02X:%02X:%02X", 
+                 event->mac[0], event->mac[1], event->mac[2], 
+                 event->mac[3], event->mac[4], event->mac[5]);
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
-        ESP_LOGI(TAG, "Station left, AID=%d", event->aid);
+        ESP_LOGI(TAG, "❌ Station disconnected, AID=%d, reason=%d", event->aid, event->reason);
+        ESP_LOGI(TAG, "📱 Device MAC: %02X:%02X:%02X:%02X:%02X:%02X", 
+                 event->mac[0], event->mac[1], event->mac[2], 
+                 event->mac[3], event->mac[4], event->mac[5]);
+        
+        // Log specific disconnect reasons
+        switch(event->reason) {
+            case WIFI_REASON_AUTH_EXPIRE:
+                ESP_LOGW(TAG, "🔐 Auth expired - authentication timeout");
+                break;
+            case WIFI_REASON_ASSOC_EXPIRE:
+                ESP_LOGW(TAG, "🤝 Assoc expired - association timeout");
+                break;
+            case WIFI_REASON_HANDSHAKE_TIMEOUT:
+                ESP_LOGW(TAG, "⏰ Handshake timeout");
+                break;
+            case WIFI_REASON_AUTH_FAIL:
+                ESP_LOGW(TAG, "🚫 Authentication failed");
+                break;
+            case WIFI_REASON_ASSOC_FAIL:
+                ESP_LOGW(TAG, "🚫 Association failed");
+                break;
+            default:
+                ESP_LOGW(TAG, "❓ Unknown disconnect reason: %d", event->reason);
+                break;
+        }
+    } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        ESP_LOGI(TAG, "🔄 Station connecting...");
     }
 }
 
@@ -102,50 +132,59 @@ void wifi_init_softap(void) {
                                                          &wifi_event_handler,
                                                          NULL, NULL));
 
-    // Simplified WiFi AP configuration for maximum Android compatibility
+    // Ultra-simple WiFi AP configuration for maximum compatibility
     wifi_config_t wifi_config = {
         .ap = {
             .ssid = WIFI_SSID,
             .ssid_len = strlen(WIFI_SSID),
-            .channel = 6,                           // Channel 6 is most compatible
-            .password = WIFI_PASS,
-            .max_connection = MAX_STA_CONN,
-            .authmode = WIFI_AUTH_OPEN,             // Start with open network
+            .channel = 1,                           // Channel 1 (most basic)
+            .password = "",                         // Explicitly empty password
+            .max_connection = 1,                    // Only allow 1 connection to avoid conflicts
+            .authmode = WIFI_AUTH_OPEN,             // Open network
             .beacon_interval = 100,
+            .ssid_hidden = 0,                       // Visible SSID
         },
     };
     
     // Force open network for testing
     wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-    ESP_LOGI(TAG, "🔓 Using OPEN WiFi network for Android compatibility testing");
+    wifi_config.ap.password[0] = '\0'; // Ensure password is empty
+    ESP_LOGI(TAG, "🔓 Using OPEN WiFi network for maximum Android compatibility");
 
-    ESP_LOGI(TAG, "🔧 Trying WiFi AP configuration...");
+    ESP_LOGI(TAG, "🔧 WiFi AP Configuration:");
     ESP_LOGI(TAG, "📶 SSID: %s", WIFI_SSID);
-    ESP_LOGI(TAG, "🔐 Security: OPEN (no password required)");
+    ESP_LOGI(TAG, "🔐 Security: OPEN (no password)");
     ESP_LOGI(TAG, "📡 Channel: %d", wifi_config.ap.channel);
+    ESP_LOGI(TAG, "👥 Max connections: %d", wifi_config.ap.max_connection);
     ESP_LOGI(TAG, "🔒 Auth Mode: %d (0=Open)", wifi_config.ap.authmode);
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     
-    // Additional Android compatibility settings
+    // Start WiFi before setting country code
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "✅ WiFi AP started");
     
-    // Wait a moment for WiFi to initialize
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // Wait for WiFi to stabilize
+    vTaskDelay(pdMS_TO_TICKS(2000));
     
-    // Set country code for Bangladesh (proper channel compliance)
+    // Try to set country code (optional - don't fail if it doesn't work)
     wifi_country_t country = {
-        .cc = "BD",                                 // Bangladesh country code
-        .schan = 1,                                 // Start channel
-        .nchan = 13,                                // Channels 1-13 allowed in Bangladesh
+        .cc = "BD",                                 // Bangladesh
+        .schan = 1,                                 
+        .nchan = 13,                                
         .policy = WIFI_COUNTRY_POLICY_MANUAL,
     };
+    
     esp_err_t country_err = esp_wifi_set_country(&country);
-    if (country_err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set BD country code, continuing anyway...");
+    if (country_err == ESP_OK) {
+        ESP_LOGI(TAG, "🇧🇩 Country code set to BD (Bangladesh)");
     } else {
-        ESP_LOGI(TAG, "🇧🇩 Set country code to BD (Bangladesh)");
+        ESP_LOGW(TAG, "⚠️ Could not set country code, using default");
+        // Try world-safe fallback
+        strcpy(country.cc, "01");
+        country.nchan = 11;
+        esp_wifi_set_country(&country);
     }
 
     ESP_LOGI(TAG, "✅ WiFi AP started successfully!");
