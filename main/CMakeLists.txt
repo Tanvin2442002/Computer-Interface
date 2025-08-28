@@ -1,7 +1,7 @@
 file(GLOB_RECURSE srcs "main.c" "src/*.c")
 
 idf_component_register(SRCS "${srcs}"
-                       PRIV_REQUIRES bt nvs_flash esp_driver_gpio esp_driver_ledc esp_wifi esp_http_server esp_netif esp_event json
+                       PRIV_REQUIRES bt nvs_flash esp_driver_gpio esp_driver_ledc esp_wifi esp_http_server esp_netif esp_event json esp_driver_i2c esp_log freertos
                        INCLUDE_DIRS "./include")
 # file(GLOB_RECURSE srcs "main.c" "src/*.c")
 
