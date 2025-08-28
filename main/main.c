@@ -1,6 +1,6 @@
+// Core ESP32 includes
 #include <stdio.h>
 #include <string.h>
-#include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -8,18 +8,22 @@
 #include "driver/ledc.h"
 #include "esp_err.h"
 
-// WiFi and HTTP server includes
+// WiFi and HTTP server includes for same-network communication
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
+
+// BLE includes for target detection
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
-#include "host/ble_gap.h"
+#include "host    // Initialize WiFi as station (connect to existing network)
+    ESP_LOGI(TAG, "📶 Connecting to WiFi network...");
+    wifi_init_sta();e_gap.h"
 #include "host/ble_store.h" 
 #include "host/ble_hs_adv.h"
 
@@ -51,19 +55,19 @@ static const uint16_t target_manufacturer_id = 0x1234; // Your manufacturer ID
 static const uint8_t target_manufacturer_data[] = {1, 2, 3, 4}; // Your custom data
 static const size_t target_manufacturer_data_len = sizeof(target_manufacturer_data);
 
-// WiFi Configuration - Ultra-simple for Android compatibility
-#define WIFI_SSID      "ESP32"          // Very simple SSID
-#define WIFI_PASS      ""               // Empty password for open network
-#define MAX_STA_CONN   1                // Only 1 device to avoid conflicts
+// WiFi Configuration - Connect to existing network
+#define WIFI_SSID      "Your_Home_WiFi_Name"    // 🔧 CHANGE THIS to your WiFi network name
+#define WIFI_PASS      "Your_WiFi_Password"     // 🔧 CHANGE THIS to your WiFi password  
+#define WIFI_MAXIMUM_RETRY  5
 
 // Global variables for command handling
 static char received_command[128] = {0};
 static bool new_command_received = false;
+static esp_ip4_addr_t esp32_ip;  // Store ESP32's IP address
 
 // Function declarations
 void stop_motors(void);
 void rotate_360_degrees(void);
-
 
 // RSSI filter and trend detection variables
 #define BUFFER_SIZE 5
@@ -77,146 +81,72 @@ int prevAvgRSSI = 0;
 const int TREND_THRESHOLD = 1; // dBm, more sensitive
 
 // WiFi event handler
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data) {
-    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
-        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
-        ESP_LOGI(TAG, "✅ Station connected successfully, AID=%d", event->aid);
-        ESP_LOGI(TAG, "📱 Device MAC: %02X:%02X:%02X:%02X:%02X:%02X", 
-                 event->mac[0], event->mac[1], event->mac[2], 
-                 event->mac[3], event->mac[4], event->mac[5]);
-    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
-        wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
-        ESP_LOGI(TAG, "❌ Station disconnected, AID=%d, reason=%d", event->aid, event->reason);
-        ESP_LOGI(TAG, "📱 Device MAC: %02X:%02X:%02X:%02X:%02X:%02X", 
-                 event->mac[0], event->mac[1], event->mac[2], 
-                 event->mac[3], event->mac[4], event->mac[5]);
-        
-        // Log specific disconnect reasons
-        switch(event->reason) {
-            case WIFI_REASON_AUTH_EXPIRE:
-                ESP_LOGW(TAG, "🔐 Auth expired - authentication timeout");
-                break;
-            case WIFI_REASON_ASSOC_EXPIRE:
-                ESP_LOGW(TAG, "🤝 Assoc expired - association timeout");
-                break;
-            case WIFI_REASON_HANDSHAKE_TIMEOUT:
-                ESP_LOGW(TAG, "⏰ Handshake timeout");
-                break;
-            case WIFI_REASON_AUTH_FAIL:
-                ESP_LOGW(TAG, "🚫 Authentication failed");
-                break;
-            case WIFI_REASON_ASSOC_FAIL:
-                ESP_LOGW(TAG, "🚫 Association failed");
-                break;
-            default:
-                ESP_LOGW(TAG, "❓ Unknown disconnect reason: %d", event->reason);
-                break;
-        }
-    } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
-        ESP_LOGI(TAG, "🔄 Station connecting...");
+static void event_handler(void* arg, esp_event_base_t event_base,
+                         int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(TAG, "� WiFi disconnected, retrying...");
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAG, "✅ Connected to WiFi! ESP32 IP address: " IPSTR, IP2STR(&event->ip_info.ip));
+        esp32_ip = event->ip_info.ip;
     }
 }
 
-// Initialize WiFi in Access Point mode
-void wifi_init_softap(void) {
+// Initialize WiFi in station mode
+void wifi_init_sta(void)
+{
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap();
+    esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                         ESP_EVENT_ANY_ID,
-                                                         &wifi_event_handler,
-                                                         NULL, NULL));
+                                                        ESP_EVENT_ANY_ID,
+                                                        &event_handler,
+                                                        NULL,
+                                                        &instance_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                        IP_EVENT_STA_GOT_IP,
+                                                        &event_handler,
+                                                        NULL,
+                                                        &instance_got_ip));
 
-    // Ultra-simple WiFi AP configuration for maximum compatibility
     wifi_config_t wifi_config = {
-        .ap = {
+        .sta = {
             .ssid = WIFI_SSID,
-            .ssid_len = strlen(WIFI_SSID),
-            .channel = 1,                           // Channel 1 (most basic)
-            .password = "",                         // Explicitly empty password
-            .max_connection = 1,                    // Only allow 1 connection to avoid conflicts
-            .authmode = WIFI_AUTH_OPEN,             // Open network
-            .beacon_interval = 100,
-            .ssid_hidden = 0,                       // Visible SSID
+            .password = WIFI_PASS,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
-    
-    // Force open network for testing
-    wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-    wifi_config.ap.password[0] = '\0'; // Ensure password is empty
-    ESP_LOGI(TAG, "🔓 Using OPEN WiFi network for maximum Android compatibility");
-
-    ESP_LOGI(TAG, "🔧 WiFi AP Configuration:");
-    ESP_LOGI(TAG, "📶 SSID: %s", WIFI_SSID);
-    ESP_LOGI(TAG, "🔐 Security: OPEN (no password)");
-    ESP_LOGI(TAG, "📡 Channel: %d", wifi_config.ap.channel);
-    ESP_LOGI(TAG, "👥 Max connections: %d", wifi_config.ap.max_connection);
-    ESP_LOGI(TAG, "🔒 Auth Mode: %d (0=Open)", wifi_config.ap.authmode);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    
-    // Start WiFi before setting country code
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "✅ WiFi AP started");
-    
-    // Wait for WiFi to stabilize
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    
-    // Try to set country code (optional - don't fail if it doesn't work)
-    wifi_country_t country = {
-        .cc = "BD",                                 // Bangladesh
-        .schan = 1,                                 
-        .nchan = 13,                                
-        .policy = WIFI_COUNTRY_POLICY_MANUAL,
-    };
-    
-    esp_err_t country_err = esp_wifi_set_country(&country);
-    if (country_err == ESP_OK) {
-        ESP_LOGI(TAG, "🇧🇩 Country code set to BD (Bangladesh)");
-    } else {
-        ESP_LOGW(TAG, "⚠️ Could not set country code, using default");
-        // Try world-safe fallback
-        strcpy(country.cc, "01");
-        country.nchan = 11;
-        esp_wifi_set_country(&country);
-    }
 
-    ESP_LOGI(TAG, "✅ WiFi AP started successfully!");
-    ESP_LOGI(TAG, "📶 SSID: %s", WIFI_SSID);
-    ESP_LOGI(TAG, "🔐 Password: %s", WIFI_PASS);
-    ESP_LOGI(TAG, "📡 Channel: %d", wifi_config.ap.channel);
-    ESP_LOGI(TAG, "🔒 Security: WPA2-PSK with AES");
-    
-    // Get and display IP address
-    esp_netif_ip_info_t ip_info;
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (netif) {
-        esp_netif_get_ip_info(netif, &ip_info);
-        ESP_LOGI(TAG, "🌐 ESP32 AP IP Address: " IPSTR, IP2STR(&ip_info.ip));
-        ESP_LOGI(TAG, "🚪 Gateway: " IPSTR, IP2STR(&ip_info.gw));
-        ESP_LOGI(TAG, "🔢 Netmask: " IPSTR, IP2STR(&ip_info.netmask));
-        ESP_LOGI(TAG, "📱 Android should connect to: %s (password: %s)", WIFI_SSID, WIFI_PASS);
-    }
+    ESP_LOGI(TAG, "� Connecting to WiFi SSID: %s", WIFI_SSID);
 }
 
-// HTTP POST handler for receiving commands from Flutter
-static esp_err_t command_post_handler(httpd_req_t *req) {
+// HTTP POST handler for commands from Flutter
+static esp_err_t command_post_handler(httpd_req_t *req)
+{
     char buf[128];
     int ret, remaining = req->content_len;
 
     if (remaining >= sizeof(buf)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
+        /* Content too long */
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Content too long");
         return ESP_FAIL;
     }
 
-    ret = httpd_req_recv(req, buf, remaining);
-    if (ret <= 0) {
+    /* Read the data for the request */
+    if ((ret = httpd_req_recv(req, buf, remaining)) <= 0) {
         if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
             httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "Request timeout");
         }
@@ -224,50 +154,64 @@ static esp_err_t command_post_handler(httpd_req_t *req) {
     }
 
     buf[ret] = '\0';
-    
-    ESP_LOGI(TAG, "📱 Raw received data: %s", buf);
-    
-    // Parse JSON to extract command
+    ESP_LOGI(TAG, "📨 HTTP command received: %s", buf);
+
+    // Parse JSON command
     cJSON *json = cJSON_Parse(buf);
     if (json == NULL) {
-        ESP_LOGE(TAG, "❌ Failed to parse JSON");
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
         return ESP_FAIL;
     }
-    
-    cJSON *command_json = cJSON_GetObjectItem(json, "command");
-    if (command_json == NULL || !cJSON_IsString(command_json)) {
-        ESP_LOGE(TAG, "❌ No 'command' field found in JSON");
+
+    cJSON *command = cJSON_GetObjectItem(json, "command");
+    if (!cJSON_IsString(command)) {
         cJSON_Delete(json);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing command field");
         return ESP_FAIL;
     }
-    
-    // Extract just the command value
-    const char *command_value = cJSON_GetStringValue(command_json);
-    strncpy(received_command, command_value, sizeof(received_command) - 1);
+
+    // Copy command to global variable
+    strncpy(received_command, command->valuestring, sizeof(received_command) - 1);
     received_command[sizeof(received_command) - 1] = '\0';
     new_command_received = true;
-    
-    ESP_LOGI(TAG, "📱 Parsed command: %s", received_command);
-    
+
     cJSON_Delete(json);
 
-    // Send response back to Flutter
-    httpd_resp_set_type(req, "text/plain");
-    httpd_resp_send(req, "Command received", HTTPD_RESP_USE_STRLEN);
+    // Send response
+    const char* response = "{\"status\":\"ok\",\"message\":\"Command received\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 
     return ESP_OK;
 }
 
+// HTTP GET handler for status
+static esp_err_t status_get_handler(httpd_req_t *req)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "status", "active");
+    cJSON_AddBoolToObject(json, "rotating", is_rotating);
+    cJSON_AddStringToObject(json, "ip", ip4addr_ntoa(&esp32_ip));
+    
+    char *json_string = cJSON_Print(json);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_string, HTTPD_RESP_USE_STRLEN);
+    
+    free(json_string);
+    cJSON_Delete(json);
+    return ESP_OK;
+}
+
 // Start HTTP server
-static httpd_handle_t start_webserver(void) {
+static httpd_handle_t start_webserver(void)
+{
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.lru_purge_enable = true;
 
-    ESP_LOGI(TAG, "Starting HTTP server on port: '%d'", config.server_port);
+    // Start the httpd server
+    ESP_LOGI(TAG, "🌐 Starting HTTP server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK) {
+        // Set URI handlers
         httpd_uri_t command_uri = {
             .uri       = "/command",
             .method    = HTTP_POST,
@@ -275,32 +219,63 @@ static httpd_handle_t start_webserver(void) {
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &command_uri);
+
+        httpd_uri_t status_uri = {
+            .uri       = "/status",
+            .method    = HTTP_GET,
+            .handler   = status_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &status_uri);
+
+        ESP_LOGI(TAG, "✅ HTTP server started successfully");
+        ESP_LOGI(TAG, "📡 Endpoints available:");
+        ESP_LOGI(TAG, "   POST /command - Send commands via JSON");
+        ESP_LOGI(TAG, "   GET  /status  - Check robot status");
         return server;
     }
 
-    ESP_LOGI(TAG, "Error starting server!");
+    ESP_LOGE(TAG, "❌ Failed to start HTTP server");
     return NULL;
 }
-
-// Process received commands
+// Process received commands (from WiFi HTTP)
 void process_flutter_command(const char* command) {
-    ESP_LOGI(TAG, "🔄 Processing command: %s", command);
+    ESP_LOGI(TAG, "🔄 Processing command: '%s'", command);
     
-    if (strcmp(command, "rotate") == 0) {
+    // Remove any whitespace/newlines
+    char clean_command[64];
+    strncpy(clean_command, command, sizeof(clean_command) - 1);
+    clean_command[sizeof(clean_command) - 1] = '\0';
+    
+    // Remove trailing whitespace
+    int len = strlen(clean_command);
+    while (len > 0 && (clean_command[len-1] == '\n' || clean_command[len-1] == '\r' || clean_command[len-1] == ' ')) {
+        clean_command[--len] = '\0';
+    }
+    
+    ESP_LOGI(TAG, "🔄 Clean command: '%s'", clean_command);
+    
+    if (strcmp(clean_command, "rotate") == 0) {
         if (!is_rotating) {
-            ESP_LOGI(TAG, "📱 Flutter command: Starting rotation...");
+            ESP_LOGI(TAG, "📱 Command: Starting rotation...");
             rotate_360_degrees();
         } else {
             ESP_LOGI(TAG, "⚠️ Already rotating, ignoring command");
         }
-    } else if (strcmp(command, "stop") == 0) {
-        ESP_LOGI(TAG, "📱 Flutter command: Stopping motors...");
+    } else if (strcmp(clean_command, "stop") == 0) {
+        ESP_LOGI(TAG, "📱 Command: Stopping motors...");
         stop_motors();
         is_rotating = false;
-    } else if (strcmp(command, "scan") == 0) {
-        ESP_LOGI(TAG, "📱 Flutter command: BLE scanning is already active");
+    } else if (strcmp(clean_command, "scan") == 0) {
+        ESP_LOGI(TAG, "📱 Command: BLE scanning is already active");
+    } else if (strcmp(clean_command, "forward") == 0) {
+        ESP_LOGI(TAG, "📱 Command: Moving forward...");
+        move_straight_forward();
+    } else if (strcmp(clean_command, "test") == 0) {
+        ESP_LOGI(TAG, "📱 Command: Test successful! Motors and communication working ✅");
     } else {
-        ESP_LOGI(TAG, "❓ Unknown command: %s", command);
+        ESP_LOGI(TAG, "❓ Unknown command: '%s'", clean_command);
+        ESP_LOGI(TAG, "💡 Available commands: rotate, stop, scan, forward, test");
     }
 }
 
@@ -616,10 +591,14 @@ static void nimble_host_task(void *param) {
 
 /* Command monitoring task */
 static void command_monitor_task(void *param) {
+    ESP_LOGI(TAG, "🔍 Command monitor task started - checking every 100ms");
+    
     while (1) {
         if (new_command_received) {
+            ESP_LOGI(TAG, "🚨 NEW COMMAND DETECTED! Processing: '%s'", received_command);
             process_flutter_command(received_command);
             new_command_received = false;
+            ESP_LOGI(TAG, "✅ Command processing completed, flag cleared");
         }
         vTaskDelay(pdMS_TO_TICKS(100)); // Check every 100ms
     }
@@ -634,32 +613,44 @@ void app_main(void) {
     ESP_ERROR_CHECK(ret);
 
     // Initialize motor control PWM channels
-    ESP_LOGI(TAG, "Initializing motor control...");
+    ESP_LOGI(TAG, "🔧 Initializing motor control...");
     init_pwm_channels();
-    ESP_LOGI(TAG, "Motor control initialized ✓");
+    ESP_LOGI(TAG, "✅ Motor control initialized");
 
-    // Initialize WiFi Access Point
-    ESP_LOGI(TAG, "Initializing WiFi AP...");
-    wifi_init_softap();
+    // Initialize WiFi as station (connect to existing network)
+    ESP_LOGI(TAG, "� Connecting to WiFi network...");
+    wifi_init_sta();
     
-    // Start HTTP server for Flutter commands
-    ESP_LOGI(TAG, "Starting HTTP server...");
+    // Wait for WiFi connection (give it some time)
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    
+    // Start HTTP server
+    ESP_LOGI(TAG, "🚀 Starting HTTP server...");
     start_webserver();
-    ESP_LOGI(TAG, "HTTP server started on port 80");
-    ESP_LOGI(TAG, "📱 Flutter can send commands to: http://192.168.4.1/command");
-    ESP_LOGI(TAG, "📶 Connect Android to WiFi: %s (password: %s)", WIFI_SSID, WIFI_PASS);
-
-    // Initialize BLE
+    
+    // Initialize BLE scanning for target detection
+    ESP_LOGI(TAG, "🔍 Initializing BLE scanning for target detection...");
     ret = nimble_port_init();
     ESP_ERROR_CHECK(ret);
-
     nimble_host_config_init();
-
+    
     // Create tasks
     xTaskCreate(nimble_host_task, "nimble_host", 4096, NULL, 5, NULL);
     xTaskCreate(command_monitor_task, "cmd_monitor", 2048, NULL, 4, NULL);
     
-    ESP_LOGI(TAG, "🚗 Robot initialized! Ready for BLE scanning and Flutter commands");
+    ESP_LOGI(TAG, "🚗 Robot initialized successfully!");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📱 FLUTTER CONNECTION:");
+    ESP_LOGI(TAG, "   1. Make sure your phone is on the same WiFi network: %s", WIFI_SSID);
+    ESP_LOGI(TAG, "   2. ESP32 IP will be shown above when connected");
+    ESP_LOGI(TAG, "   3. Flutter app should send POST to: http://ESP32_IP/command");
+    ESP_LOGI(TAG, "   4. Test with GET: http://ESP32_IP/status");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🎯 BLE TARGET DETECTION:");
+    ESP_LOGI(TAG, "   - Scanning for UUID: %s", target_uuid);
+    ESP_LOGI(TAG, "   - Will auto-rotate and move when target detected");
+    ESP_LOGI(TAG, "   - Manual commands can override automatic behavior");
+    ESP_LOGI(TAG, "");
 }
 
 
