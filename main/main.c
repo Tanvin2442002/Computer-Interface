@@ -293,9 +293,6 @@ void process_flutter_command(const char* command) {
         stop_motors();
         is_rotating = false;
         
-        // Set robot as free when stopped manually
-        set_robot_free();
-        
     } else if (strcmp(clean_command, "scan") == 0) {
         ESP_LOGI(TAG, "📱 Command: BLE scanning is already active");
     } else if (strcmp(clean_command, "forward") == 0) {
