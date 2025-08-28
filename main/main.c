@@ -9,7 +9,7 @@
  */
 
 #include <stdio.h>
-#include "driver/i2c_master.h"
+#include "driver/i2c.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,73 +29,87 @@
 
 static const char *TAG = "MPU9250_TEST";
 
-// I2C master handle
-static i2c_master_bus_handle_t bus_handle;
-static i2c_master_dev_handle_t dev_handle;
-static uint8_t active_addr = 0;
+// I2C configuration
+#define I2C_MASTER_NUM          I2C_NUM_0
+#define I2C_MASTER_TIMEOUT_MS   1000
+
+// Device address detection
+static uint8_t mpu_device_addr = 0;
 
 /* ================= I2C INIT ================= */
 void i2c_master_init(void) {
-    i2c_master_bus_config_t i2c_mst_config = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = I2C_NUM_0,
-        .scl_io_num = I2C_MASTER_SCL_IO,
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
         .sda_io_num = I2C_MASTER_SDA_IO,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = I2C_MASTER_FREQ_HZ,
     };
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));
-
-    // Try both possible addresses
-    esp_err_t ret;
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = MPU9250_ADDR_0,
-        .scl_speed_hz = I2C_MASTER_FREQ_HZ,
-    };
-    ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
-    if (ret == ESP_OK) {
-        active_addr = MPU9250_ADDR_0;
-        ESP_LOGI(TAG, "Found device at address 0x68");
-        return;
-    }
-    dev_cfg.device_address = MPU9250_ADDR_1;
-    ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
-    if (ret == ESP_OK) {
-        active_addr = MPU9250_ADDR_1;
-        ESP_LOGI(TAG, "Found device at address 0x69");
-        return;
-    }
-    ESP_LOGE(TAG, "No MPU9250 device found at 0x68 or 0x69!");
+    
+    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
+    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
+    ESP_LOGI(TAG, "I2C master initialized on SDA=%d, SCL=%d at %d Hz", 
+             I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, I2C_MASTER_FREQ_HZ);
 }
 
 /* ================= I2C READ/WRITE ================= */
-esp_err_t i2c_write_byte(uint8_t reg_addr, uint8_t data) {
-    uint8_t write_buf[2] = {reg_addr, data};
-    esp_err_t ret = i2c_master_transmit(dev_handle, write_buf, sizeof(write_buf), 1000);
+esp_err_t i2c_write_byte(uint8_t device_addr, uint8_t reg_addr, uint8_t data) {
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg_addr, true);
+    i2c_master_write_byte(cmd, data, true);
+    i2c_master_stop(cmd);
+    
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
+    i2c_cmd_link_delete(cmd);
+    
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to write 0x%02X to register 0x%02X, error: %s", data, reg_addr, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to write 0x%02X to register 0x%02X (addr 0x%02X), error: %s", 
+                 data, reg_addr, device_addr, esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "Successfully wrote 0x%02X to register 0x%02X", data, reg_addr);
+        ESP_LOGI(TAG, "Successfully wrote 0x%02X to register 0x%02X (addr 0x%02X)", 
+                 data, reg_addr, device_addr);
     }
     return ret;
 }
 
-esp_err_t i2c_read_bytes(uint8_t reg_addr, uint8_t *data, size_t len) {
-    esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, data, len, 1000);
+esp_err_t i2c_read_bytes(uint8_t device_addr, uint8_t reg_addr, uint8_t *data, size_t len) {
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    
+    // Write register address
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg_addr, true);
+    
+    // Read data
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_READ, true);
+    
+    if (len > 1) {
+        i2c_master_read(cmd, data, len - 1, I2C_MASTER_ACK);
+    }
+    i2c_master_read_byte(cmd, data + len - 1, I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
+    i2c_cmd_link_delete(cmd);
+    
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read %d bytes from register 0x%02X, error: %s", len, reg_addr, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to read %d bytes from register 0x%02X (addr 0x%02X), error: %s", 
+                 len, reg_addr, device_addr, esp_err_to_name(ret));
     }
     return ret;
 }
 
-uint8_t i2c_read_byte(uint8_t reg_addr) {
+uint8_t i2c_read_byte(uint8_t device_addr, uint8_t reg_addr) {
     uint8_t data = 0;
-    esp_err_t ret = i2c_read_bytes(reg_addr, &data, 1);
+    esp_err_t ret = i2c_read_bytes(device_addr, reg_addr, &data, 1);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Read 0x%02X from register 0x%02X", data, reg_addr);
+        ESP_LOGI(TAG, "Read 0x%02X from register 0x%02X (addr 0x%02X)", data, reg_addr, device_addr);
     } else {
-        ESP_LOGE(TAG, "Failed to read from register 0x%02X", reg_addr);
+        ESP_LOGE(TAG, "Failed to read from register 0x%02X (addr 0x%02X)", reg_addr, device_addr);
     }
     return data;
 }
@@ -105,12 +119,12 @@ void mpu9250_init(void) {
     ESP_LOGI(TAG, "Initializing sensor...");
     
     // Check if device is accessible before initialization
-    uint8_t initial_who_am_i = i2c_read_byte(WHO_AM_I_REG);
+    uint8_t initial_who_am_i = i2c_read_byte(mpu_device_addr, WHO_AM_I_REG);
     ESP_LOGI(TAG, "Initial WHO_AM_I before init: 0x%02X", initial_who_am_i);
     
     // Wake up sensor (clear sleep bit)
     ESP_LOGI(TAG, "Waking up sensor...");
-    esp_err_t ret = i2c_write_byte(PWR_MGMT_1, 0x00);
+    esp_err_t ret = i2c_write_byte(mpu_device_addr, PWR_MGMT_1, 0x00);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to wake up sensor!");
         return;
@@ -118,34 +132,34 @@ void mpu9250_init(void) {
     vTaskDelay(100 / portTICK_PERIOD_MS);
     
     // Verify sensor is awake by reading PWR_MGMT_1
-    uint8_t pwr_mgmt = i2c_read_byte(PWR_MGMT_1);
+    uint8_t pwr_mgmt = i2c_read_byte(mpu_device_addr, PWR_MGMT_1);
     ESP_LOGI(TAG, "PWR_MGMT_1 register after wake up: 0x%02X (should be 0x00)", pwr_mgmt);
     
     // Set accelerometer full scale range to ±2g
     ESP_LOGI(TAG, "Configuring accelerometer...");
-    i2c_write_byte(0x1C, 0x00);
+    i2c_write_byte(mpu_device_addr, 0x1C, 0x00);
     vTaskDelay(10 / portTICK_PERIOD_MS);
     
     // Set gyroscope full scale range to ±250°/s
     ESP_LOGI(TAG, "Configuring gyroscope...");
-    i2c_write_byte(0x1B, 0x00);
+    i2c_write_byte(mpu_device_addr, 0x1B, 0x00);
     vTaskDelay(10 / portTICK_PERIOD_MS);
     
     // Set sample rate divider (1kHz / (1 + 7) = 125Hz)
     ESP_LOGI(TAG, "Setting sample rate...");
-    i2c_write_byte(0x19, 0x07);
+    i2c_write_byte(mpu_device_addr, 0x19, 0x07);
     vTaskDelay(10 / portTICK_PERIOD_MS);
     
     // Configure digital low pass filter
     ESP_LOGI(TAG, "Configuring filter...");
-    i2c_write_byte(0x1A, 0x06);
+    i2c_write_byte(mpu_device_addr, 0x1A, 0x06);
     vTaskDelay(100 / portTICK_PERIOD_MS);
     
     // Verify configuration by reading back registers
-    uint8_t accel_config = i2c_read_byte(0x1C);
-    uint8_t gyro_config = i2c_read_byte(0x1B);
-    uint8_t sample_rate = i2c_read_byte(0x19);
-    uint8_t dlpf_config = i2c_read_byte(0x1A);
+    uint8_t accel_config = i2c_read_byte(mpu_device_addr, 0x1C);
+    uint8_t gyro_config = i2c_read_byte(mpu_device_addr, 0x1B);
+    uint8_t sample_rate = i2c_read_byte(mpu_device_addr, 0x19);
+    uint8_t dlpf_config = i2c_read_byte(mpu_device_addr, 0x1A);
     
     ESP_LOGI(TAG, "Configuration verification:");
     ESP_LOGI(TAG, "  ACCEL_CONFIG (0x1C): 0x%02X (should be 0x00)", accel_config);
@@ -163,7 +177,7 @@ int16_t read_word(uint8_t high, uint8_t low) {
 
 void read_accel(int16_t *ax, int16_t *ay, int16_t *az) {
     uint8_t data[6] = {0};
-    esp_err_t ret = i2c_read_bytes(ACCEL_XOUT_H, data, 6);
+    esp_err_t ret = i2c_read_bytes(mpu_device_addr, ACCEL_XOUT_H, data, 6);
     if (ret == ESP_OK) {
         *ax = read_word(data[0], data[1]);
         *ay = read_word(data[2], data[3]);
@@ -178,7 +192,7 @@ void read_accel(int16_t *ax, int16_t *ay, int16_t *az) {
 
 void read_gyro(int16_t *gx, int16_t *gy, int16_t *gz) {
     uint8_t data[6] = {0};
-    esp_err_t ret = i2c_read_bytes(GYRO_XOUT_H, data, 6);
+    esp_err_t ret = i2c_read_bytes(mpu_device_addr, GYRO_XOUT_H, data, 6);
     if (ret == ESP_OK) {
         *gx = read_word(data[0], data[1]);
         *gy = read_word(data[2], data[3]);
@@ -195,21 +209,23 @@ void read_gyro(int16_t *gx, int16_t *gy, int16_t *gz) {
 void i2c_scanner(void) {
     ESP_LOGI(TAG, "Starting I2C bus scan...");
     for (uint8_t addr = 1; addr < 127; addr++) {
-        i2c_device_config_t temp_dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = addr,
-            .scl_speed_hz = I2C_MASTER_FREQ_HZ,
-        };
-        i2c_master_dev_handle_t temp_dev_handle;
-            esp_err_t ret = i2c_master_bus_add_device(bus_handle, &temp_dev_cfg, &temp_dev_handle);
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        
+        esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
+        i2c_cmd_link_delete(cmd);
+        
         if (ret == ESP_OK) {
-                uint8_t test_reg = WHO_AM_I_REG; // Use WHO_AM_I register
-                uint8_t test_data = 0;
-                ret = i2c_master_transmit_receive(temp_dev_handle, &test_reg, 1, &test_data, 1, 50);
-            if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "Found device at address 0x%02X, WHO_AM_I=0x%02X", addr, test_data);
+            uint8_t who_am_i = i2c_read_byte(addr, WHO_AM_I_REG);
+            ESP_LOGI(TAG, "Found device at address 0x%02X, WHO_AM_I=0x%02X", addr, who_am_i);
+            
+            // Check if this is our MPU device
+            if (addr == MPU9250_ADDR_0 || addr == MPU9250_ADDR_1) {
+                mpu_device_addr = addr;
+                ESP_LOGI(TAG, "MPU device detected at address 0x%02X", addr);
             }
-            i2c_master_bus_rm_device(temp_dev_handle);
         }
     }
     ESP_LOGI(TAG, "I2C bus scan complete");
@@ -222,9 +238,14 @@ void app_main(void) {
     
     // Scan I2C bus for all devices
     i2c_scanner();
+    
+    if (mpu_device_addr == 0) {
+        ESP_LOGE(TAG, "No MPU device found! Check wiring.");
+        return;
+    }
 
-    uint8_t who_am_i = i2c_read_byte(WHO_AM_I_REG);
-    ESP_LOGI(TAG, "WHO_AM_I register (0x75) = 0x%02X (address 0x%02X)", who_am_i, active_addr);
+    uint8_t who_am_i = i2c_read_byte(mpu_device_addr, WHO_AM_I_REG);
+    ESP_LOGI(TAG, "WHO_AM_I register (0x75) = 0x%02X (address 0x%02X)", who_am_i, mpu_device_addr);
 
     // Check for different sensor types
     if (who_am_i == 0x71) {
@@ -244,7 +265,7 @@ void app_main(void) {
 
     while (1) {
         // Check data ready status
-        uint8_t int_status = i2c_read_byte(0x3A); // INT_STATUS register
+        uint8_t int_status = i2c_read_byte(mpu_device_addr, 0x3A); // INT_STATUS register
         ESP_LOGI(TAG, "INT_STATUS (0x3A): 0x%02X (bit 0 = data ready)", int_status);
         
         int16_t ax, ay, az, gx, gy, gz;
@@ -259,7 +280,7 @@ void app_main(void) {
         if (++debug_counter >= 5) {  // Show every 5 readings
             debug_counter = 0;
             uint8_t accel_raw[6] = {0};
-            if (i2c_read_bytes(ACCEL_XOUT_H, accel_raw, 6) == ESP_OK) {
+            if (i2c_read_bytes(mpu_device_addr, ACCEL_XOUT_H, accel_raw, 6) == ESP_OK) {
                 ESP_LOGI(TAG, "Raw ACCEL bytes: %02X %02X %02X %02X %02X %02X",
                     accel_raw[0], accel_raw[1], accel_raw[2], accel_raw[3], accel_raw[4], accel_raw[5]);
             } else {
