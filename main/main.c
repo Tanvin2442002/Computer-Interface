@@ -440,7 +440,7 @@ void init_pwm_channels(void) {
     ch.channel = LEDC_CHANNEL_3;
     ch.gpio_num = RIGHT_RPWM;
     ESP_ERROR_CHECK(ledc_channel_config(&ch));
-
+    // change kortesi
     // ensure all duties start at 0
     for (int c = 0; c < 4; ++c) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)c, 0);
