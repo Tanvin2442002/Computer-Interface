@@ -15,7 +15,6 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
-#include "lwip/apps/mdns.h"
 
 // BLE includes for target detection
 #include "nimble/nimble_port.h"
@@ -70,6 +69,7 @@ static esp_ip4_addr_t esp32_ip;  // Store ESP32's IP address
 // Function declarations
 void stop_motors(void);
 void rotate_360_degrees(void);
+void move_straight_forward(void);
 
 // RSSI filter and trend detection variables
 #define BUFFER_SIZE 5
@@ -96,12 +96,8 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "✅ Connected to WiFi! ESP32 IP address: " IPSTR, IP2STR(&event->ip_info.ip));
         esp32_ip = event->ip_info.ip;
         
-        // Start mDNS service using lwIP
-        mdns_resp_init();
-        mdns_resp_add_netif(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), MDNS_HOSTNAME, 3600);
-        
-        ESP_LOGI(TAG, "🌐 mDNS started! You can access ESP32 at: http://%s.local", MDNS_HOSTNAME);
-        ESP_LOGI(TAG, "📱 Flutter app should connect to: http://%s.local/command", MDNS_HOSTNAME);
+        ESP_LOGI(TAG, "🌐 ESP32 ready for connections!");
+        ESP_LOGI(TAG, "📱 Flutter app should connect to: http://" IPSTR "/command", IP2STR(&esp32_ip));
     }
 }
 
@@ -200,7 +196,11 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     cJSON *json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "status", "active");
     cJSON_AddBoolToObject(json, "rotating", is_rotating);
-    cJSON_AddStringToObject(json, "ip", ip4addr_ntoa(&esp32_ip));
+    
+    // Convert ESP IP to string format
+    char ip_str[16];
+    esp_ip4addr_ntoa(&esp32_ip, ip_str, sizeof(ip_str));
+    cJSON_AddStringToObject(json, "ip", ip_str);
     
     char *json_string = cJSON_Print(json);
     httpd_resp_set_type(req, "application/json");
@@ -651,9 +651,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "📱 FLUTTER CONNECTION:");
     ESP_LOGI(TAG, "   1. Make sure your phone is on the same WiFi network: %s", WIFI_SSID);
-    ESP_LOGI(TAG, "   2. Flutter app should connect to: http://%s.local/command", MDNS_HOSTNAME);
-    ESP_LOGI(TAG, "   3. Alternative: Use IP address shown above if mDNS doesn't work");
-    ESP_LOGI(TAG, "   4. Test with GET: http://%s.local/status", MDNS_HOSTNAME);
+    ESP_LOGI(TAG, "   2. ESP32 IP will be shown above when connected");
+    ESP_LOGI(TAG, "   3. Flutter app should send POST to: http://ESP32_IP/command");
+    ESP_LOGI(TAG, "   4. Test with GET: http://ESP32_IP/status");
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🎯 BLE TARGET DETECTION:");
     ESP_LOGI(TAG, "   - Scanning for UUID: %s", target_uuid);
